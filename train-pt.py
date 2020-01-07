@@ -14,9 +14,11 @@ import unicodedata
 import string
 import time
 import random
+import math
 import argparse
 import logging
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
@@ -26,36 +28,6 @@ logging.basicConfig(
     datefmt='%m/%d/%Y %H:%M:%S',
     level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# build vocab
-vocab: Counter = Counter()
-
-
-# Read the data
-def readLines(filename):
-    content = open(filename, encoding='utf-8').read().strip()
-    vocab.update(content)
-    lines = content.split('\n')
-    # for Eng, one could do [unicodeToAscii(line) for line in lines]
-    return lines
-
-
-category_lines: Dict[str, List[str]] = {}
-all_categories: List[str] = []
-
-for filename in glob.glob('data/*.txt'):
-    category = os.path.splitext(os.path.basename(filename))[0]
-    all_categories.append(category)
-    lines = readLines(filename)
-    category_lines[category] = lines
-
-n_categories = len(all_categories)
-if n_categories == 0:
-    raise RuntimeError('Data not found.')
-
-print('# categories: {}, {} samples:'.format(n_categories, all_categories))
-for c in all_categories:
-    print("{}: {}".format(c, len(category_lines[c])))
 
 # Reserved tokens for things like padding and EOS symbols.
 PAD = "<pad>"
@@ -67,12 +39,49 @@ PAD_ID = RESERVED_TOKENS.index(PAD)  # Normally 0
 EOS_ID = RESERVED_TOKENS.index(EOS)  # Normally 1
 BOS_ID = RESERVED_TOKENS.index(BOS)  # Normally 2
 
-all_letters = " " * NUM_RESERVED_TOKENS + "".join(list(vocab))
-n_letters = len(all_letters) + NUM_RESERVED_TOKENS
 
-print("Total chars: {}".format(n_letters))
-logger.debug("Vocab: {}".format(vocab))
-logger.debug("Letters: '{}'".format(all_letters))
+def load_data(from_path: str):
+    # build vocab
+    vocab: Counter = Counter()
+
+    # Read the data
+    def readLines(filename):
+        content = open(filename, encoding='utf-8').read().strip()
+        vocab.update(content)
+        lines = content.split('\n')
+        # for Eng, one could do [unicodeToAscii(line) for line in lines]
+        return lines
+
+    category_lines: Dict[str, List[str]] = {}
+    all_categories: List[str] = []
+
+    for filename in glob.glob(from_path):
+        category = os.path.splitext(os.path.basename(filename))[0]
+        all_categories.append(category)
+        lines = readLines(filename)
+        category_lines[category] = lines
+
+    n_categories = len(all_categories)
+    if n_categories == 0:
+        raise RuntimeError('Data not found.')
+
+    print('# categories: {}, {} samples:'.format(n_categories, all_categories))
+    for c in all_categories:
+        print("{}: {}".format(c, len(category_lines[c])))
+
+    all_letters = " " * NUM_RESERVED_TOKENS + "".join(list(vocab))
+    print("Total chars: {}".format(len(all_letters)))
+    logger.debug("Vocab: {}".format(vocab))
+    logger.debug("Letters: '{}'".format(all_letters))
+
+    total_samples = [(k, v) for k, vs in category_lines.items() for v in vs]
+    return all_letters, all_categories, total_samples
+
+
+# TODO(bzz): load full data only in train
+all_letters, all_categories, all_samples = load_data('data/*.txt')
+n_letters = len(all_letters)
+n_categories = len(all_categories)
 
 
 # One-hot vector for category
@@ -109,6 +118,7 @@ def decode(ids: torch.Tensor) -> str:
     return "".join(res)
 
 
+# test: encode/decode
 t = "test"
 logger.debug("in : '{}' - {}:".format(
     t,
@@ -149,28 +159,6 @@ def pad_collate(batch):
                                                padding_value=PAD_ID)
     return default_collate(list(zip(*(cats, inps_pad, tgts_pad))))
 
-
-total_samples = [(k, v) for k, vs in category_lines.items() for v in vs]
-
-valid_set = CityNames(total_samples)
-
-train_set = CityNames(total_samples)
-training_data_loader = DataLoader(train_set,
-                                  shuffle=True,
-                                  batch_size=64,
-                                  collate_fn=pad_collate)
-
-# for indexes in loader._index_sampler:
-#     print([dataset[i] for i in indexes])
-# import pdb; pdb.set_trace()
-
-for iteration, s in enumerate(training_data_loader, 1):
-    cat, inp, tgt = s[0], s[1], s[2]
-    logger.debug("\t{}: (len({})=={}) cat:{}, int:{}, tgt:{}, ".format(
-        iteration, type(s), len(s), cat.size(), inp.size(), tgt.size()))
-    if iteration == 2:
-        break
-# import sys; sys.exit()
 
 ## Model
 
@@ -218,6 +206,39 @@ def train(n_epochs: int):
         print("GPU not available, CPU used")
     print("using '{}'".format(device))
 
+    global all_samples
+    train_samples, val_samples = np.split(all_samples,
+                                          [int(.9 * len(all_samples))])
+
+    logger.info("Total samples:%d = train:%d, valid:%d", len(all_samples),
+                len(train_samples), len(val_samples))
+    del all_samples
+
+    train_set = CityNames(train_samples)
+    training_data_loader = DataLoader(train_set,
+                                      shuffle=True,
+                                      batch_size=64,
+                                      collate_fn=pad_collate)
+
+    val_set = CityNames(val_samples)
+    val_data_loader = DataLoader(val_set,
+                                 shuffle=False,
+                                 batch_size=2,
+                                 collate_fn=pad_collate)
+
+    # for indexes in loader._index_sampler:
+    #     print([dataset[i] for i in indexes])
+    # import pdb; pdb.set_trace()
+
+    for iteration, s in enumerate(training_data_loader, 1):
+        cat, inp, tgt = s[0], s[1], s[2]
+        logger.debug("\t{}: (len({})=={}) cat:{}, int:{}, tgt:{}, ".format(
+            iteration, type(s), len(s), cat.size(), inp.size(), tgt.size()))
+        if iteration == 2:
+            break
+
+    # import sys; sys.exit()
+
     print_every = 20
     plot_every = 10
     all_losses = []
@@ -234,17 +255,12 @@ def train(n_epochs: int):
         print("Training for {} epochs...".format(n_epochs))
         for epoch in range(1, n_epochs + 1):
 
+            # train
             for batch_ndx, s in enumerate(training_data_loader, 1):
                 category_tensor, input_tensor, target_tensor = s[0].to(
                     device), s[1].to(device), s[2].to(device)
 
-                loss: torch.Tensor = 0
-
                 output = rnn(category_tensor, input_tensor)
-                # print(" category:{} input:{} target:{} output:{}".format(
-                #     category_tensor.size(), input_tensor.size(),
-                #     target_tensor.size(), output.size()))
-
                 loss = criterion(output, target_tensor.view(-1))
 
                 loss.backward()
@@ -254,13 +270,29 @@ def train(n_epochs: int):
                 loss_avg += loss.data / input_tensor.size()[0]
 
                 if batch_ndx % print_every == 0:
-                    print('{:.0f}s ({} {:.0f}%) loss: {:.4f}'.format(
-                        time.time() - start, epoch,
-                        batch_ndx / len(training_data_loader) * 100, loss_avg))
+                    print('{:.0f}s ({} {:.0f}%) loss: {:.4f}, ppl: {:8.2f}'.
+                          format(time.time() - start, epoch,
+                                 batch_ndx / len(training_data_loader) * 100,
+                                 loss_avg, math.exp(loss_avg)))
 
                 if batch_ndx % plot_every == 0:
                     all_losses.append(loss_avg / plot_every)
                     loss_avg = 0
+
+            # test
+            with torch.no_grad():
+                rnn.eval()
+                test_loss_avg = 0
+                for batch in val_data_loader:
+                    cat, inp, tgt = batch[0].to(device), batch[1].to(
+                        device), batch[2].to(device)
+
+                    out = rnn(cat, inp)
+                    test_loss = criterion(out, tgt.view(-1))
+                    test_loss_avg += test_loss.data / inp.size()[0]
+
+            print("\t test ppl: {:.4f} ".format(
+                math.exp(test_loss_avg / len(val_data_loader))))
 
     except KeyboardInterrupt:
         pass
