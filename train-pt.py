@@ -44,10 +44,10 @@ category_lines: Dict[str, List[str]] = {}
 all_categories: List[str] = []
 
 for filename in glob.glob('data/*.txt'):
-    category_tensor = os.path.splitext(os.path.basename(filename))[0]
-    all_categories.append(category_tensor)
+    category = os.path.splitext(os.path.basename(filename))[0]
+    all_categories.append(category)
     lines = readLines(filename)
-    category_lines[category_tensor] = lines
+    category_lines[category] = lines
 
 n_categories = len(all_categories)
 if n_categories == 0:
@@ -76,7 +76,7 @@ logger.debug("Letters: '{}'".format(all_letters))
 
 
 # One-hot vector for category
-def encode_category(category):
+def encode_category(category) -> torch.Tensor:
     li = all_categories.index(category)
     tensor = torch.zeros(n_categories)
     tensor[li] = 1
@@ -93,7 +93,7 @@ def encode_chars(text: str) -> torch.Tensor:
 
 
 # LongTensor of second letter to end (EOS) for target
-def encode_shift_target(line):
+def encode_shift_target(line) -> torch.LongTensor:
     letter_indexes = [all_letters.find(line[li]) for li in range(1, len(line))]
     letter_indexes.append(EOS_ID)  # n_letters - 1
     return torch.LongTensor(letter_indexes)
@@ -118,14 +118,16 @@ logger.debug("tgt: '{}'".format(encode_shift_target(t).size()))
 
 
 class CityNames(Dataset):
-    # cat_samples:List[Tuple[str, List[int]]] doesn't work https://github.com/python/mypy/issues/3955
-    def __init__(self, cat_samples):
-        input_targets = []
-        for cat, samples in cat_samples:
-            for inp in samples:
-                input_targets.append((encode_category(cat), encode_chars(inp),
-                                      encode_shift_target(inp)))
-        self.data = input_targets
+    #  passing .items() does not work https://github.com/python/mypy/issues/3955
+    def __init__(self, cat_sample: List[Tuple[str, str]]):
+        def to_tenzor(
+            s: Tuple[str, str]
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            (cat, inp) = s
+            return (encode_category(cat), encode_chars(inp),
+                    encode_shift_target(inp))
+
+        self.data = list(map(to_tenzor, cat_sample))
 
     def __getitem__(self, index):
         return self.data[index]
@@ -148,7 +150,11 @@ def pad_collate(batch):
     return default_collate(list(zip(*(cats, inps_pad, tgts_pad))))
 
 
-train_set = CityNames(category_lines.items())
+total_samples = [(k, v) for k, vs in category_lines.items() for v in vs]
+
+valid_set = CityNames(total_samples)
+
+train_set = CityNames(total_samples)
 training_data_loader = DataLoader(train_set,
                                   shuffle=True,
                                   batch_size=64,
@@ -202,7 +208,7 @@ class RNN(nn.Module):
 
 
 ## Train
-def train():
+def train(n_epochs: int):
     is_cuda = torch.cuda.is_available()
     if is_cuda:
         device = torch.device("cuda")
@@ -212,7 +218,6 @@ def train():
         print("GPU not available, CPU used")
     print("using '{}'".format(device))
 
-    n_epochs = 1000
     print_every = 20
     plot_every = 10
     all_losses = []
@@ -251,7 +256,7 @@ def train():
                 if batch_ndx % print_every == 0:
                     print('{:.0f}s ({} {:.0f}%) loss: {:.4f}'.format(
                         time.time() - start, epoch,
-                        batch_ndx / len(training_data_loader) * 100, loss))
+                        batch_ndx / len(training_data_loader) * 100, loss_avg))
 
                 if batch_ndx % plot_every == 0:
                     all_losses.append(loss_avg / plot_every)
@@ -320,12 +325,17 @@ def inference():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train",
-                        action='store_true',
+                        action="store_true",
                         help="Run the training")
     parser.add_argument("-v",
                         dest="debug",
-                        action='store_true',
+                        action="store_true",
                         help="Verbose logging")
+    parser.add_argument("--epoch",
+                        type=int,
+                        default=10,
+                        help="Number of epoch to train")
+
     args = parser.parse_args()
     # TODO(bzz): set seed
 
@@ -333,7 +343,7 @@ def main():
         logger.setLevel(logging.DEBUG)
 
     if args.train:
-        train()
+        train(args.epoch)
 
     inference()
 
