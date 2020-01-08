@@ -114,8 +114,8 @@ def main(hparams):
     encoder, total_samples = data.load('data/*.txt')
     train_samples, val_samples = np.split(total_samples,
                                           [int(.9 * len(total_samples))])
-    print("Total samples:%d = train:%d, valid:%d", len(total_samples),
-          len(train_samples), len(val_samples))
+    print("Total samples:{} = train:{}, valid:{}".format(len(total_samples),
+          len(train_samples), len(val_samples)))
     del total_samples
 
     hparams.n_categories = len(encoder.all_categories)
@@ -124,7 +124,7 @@ def main(hparams):
 
     # runs the main training/val loop, etc...
     model = LightningRNN(hparams)
-    trainer = Trainer(max_nb_epochs=hparams.epochs)
+    trainer = Trainer(max_nb_epochs=hparams.epochs, fast_dev_run=False)
     trainer.fit(model)
 
 

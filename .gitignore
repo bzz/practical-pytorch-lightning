@@ -5,3 +5,4 @@ _papers/
 _tools/
 .mypy_*/
 __pycache__
+lightning_logs/
