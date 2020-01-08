@@ -24,7 +24,7 @@ python train-pt.py --train --epoch 40
 python3 train-pt.py
 ```
 
-# PTL
+## PTL
 To train the same model using [PyTorch Lightning](https://github.com/williamFalcon/pytorch-lightning)
 ```
 python3 train-pt_lightning.py
