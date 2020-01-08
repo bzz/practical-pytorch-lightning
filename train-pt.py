@@ -24,6 +24,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+SEED = 2334
+torch.manual_seed(SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+np.random.seed(SEED)
+
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
     datefmt='%m/%d/%Y %H:%M:%S',
@@ -46,7 +52,7 @@ logger.debug("tgt: '{}'".format(encoder.encode_shift_target(t).size()))
 
 ## Model
 
-MODEL_SNAPSHOT = 'conditional-char-rnn-ds.pt'
+MODEL_SNAPSHOT = 'conditional-char-rnn.pt'
 
 
 class RNN(nn.Module):
@@ -245,7 +251,6 @@ def main():
                         help="Number of epoch to train")
 
     args = parser.parse_args()
-    # TODO(bzz): set seed
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
