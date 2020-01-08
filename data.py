@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 
 import torch
 from torch.utils.data.dataloader import default_collate
+from torch.utils.data import Dataset
 
 # Reserved tokens for things like padding and EOS symbols.
 PAD = "<pad>"
@@ -22,6 +23,7 @@ BOS_ID = RESERVED_TOKENS.index(BOS)  # Normally 2
 
 
 class Encoder(object):
+    """All vocabularies used for encoding input, category and target"""
     def __init__(self, all_letters, all_categories):
         self.all_letters = all_letters  # public
         self.all_categories = all_categories
@@ -59,6 +61,25 @@ class Encoder(object):
                 if one_hot[i] == 1:
                     res.append(self.all_letters[i])
         return "".join(res)
+
+
+class CityNames(Dataset):
+    #  passing .items() does not work https://github.com/python/mypy/issues/3955
+    def __init__(self, enc: Encoder, cat_sample: List[Tuple[str, str]]):
+        def to_tenzor(
+            s: Tuple[str, str]
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            (cat, inp) = s
+            return (enc.encode_category(cat), enc.encode_chars(inp),
+                    enc.encode_shift_target(inp))
+
+        self.data = list(map(to_tenzor, cat_sample))
+
+    def __getitem__(self, index):
+        return self.data[index]
+
+    def __len__(self):
+        return len(self.data)
 
 
 def load(from_path: str) -> Tuple[Encoder, List[Tuple[str, str]]]:

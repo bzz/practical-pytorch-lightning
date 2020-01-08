@@ -22,7 +22,7 @@ import data
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import DataLoader
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
@@ -33,29 +33,8 @@ logger = logging.getLogger(__name__)
 # TODO(bzz): cache vocabulary, load full data only in train()
 encoder, total_samples = data.load('data/*.txt')
 
-n_letters = encoder.n_letters # used in the model
+n_letters = encoder.n_letters  # used in the model
 n_categories = encoder.n_categories
-
-class CityNames(Dataset):
-    #  passing .items() does not work https://github.com/python/mypy/issues/3955
-    def __init__(self, cat_sample: List[Tuple[str, str]]):
-        def to_tenzor(
-            s: Tuple[str, str]
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            (cat, inp) = s
-            return (encoder.encode_category(cat), encoder.encode_chars(inp),
-                    encoder.encode_shift_target(inp))
-
-        self.data = list(map(to_tenzor, cat_sample))
-
-    def __getitem__(self, index):
-        return self.data[index]
-
-    def __len__(self):
-        return len(self.data)
-
-
-
 
 # test: encode/decode
 t = "test"
@@ -115,13 +94,13 @@ def train(n_epochs: int):
                 len(train_samples), len(val_samples))
     del total_samples
 
-    train_set = CityNames(train_samples)
+    train_set = data.CityNames(encoder, train_samples)
     training_data_loader = DataLoader(train_set,
                                       shuffle=True,
                                       batch_size=64,
                                       collate_fn=data.pad_collate)
 
-    val_set = CityNames(val_samples)
+    val_set = data.CityNames(encoder, val_samples)
     val_data_loader = DataLoader(val_set,
                                  shuffle=False,
                                  batch_size=2,
