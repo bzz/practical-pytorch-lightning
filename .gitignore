@@ -1,0 +1,7 @@
+.venv/
+.vscode/
+.DS_Store
+_papers/
+_tools/
+.mypy_*/
+__pycache__
