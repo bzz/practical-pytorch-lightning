@@ -97,13 +97,13 @@ class LightningRNN(pl.LightningModule):
         """
         # MODEL specific
         parser = ArgumentParser(parents=[parent_parser])
-        parser.add_argument('--learning_rate', default=0.02, type=float)
+        parser.add_argument('--learning_rate', default=0.0005, type=float)
         parser.add_argument('--batch_size', default=64, type=int)
         parser.add_argument('--hidden_size', default=128, type=int)
         # TODO(bzz): save hparams set as a GIN templates, to check-in
 
         # training specific (for this model)
-        parser.add_argument('--epochs', default=40, type=int)
+        parser.add_argument('--epochs', default=10, type=int)
 
         return parser
 
@@ -114,8 +114,8 @@ def main(hparams):
     encoder, total_samples = data.load('data/*.txt')
     train_samples, val_samples = np.split(total_samples,
                                           [int(.9 * len(total_samples))])
-    print("Total samples:{} = train:{}, valid:{}".format(len(total_samples),
-          len(train_samples), len(val_samples)))
+    print("Total samples:{} = train:{}, valid:{}".format(
+        len(total_samples), len(train_samples), len(val_samples)))
     del total_samples
 
     hparams.n_categories = len(encoder.all_categories)
