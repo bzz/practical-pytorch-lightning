@@ -46,8 +46,8 @@ n_categories = encoder.n_categories
 t = "test"
 logger.debug("in : '{}' - {}:".format(
     t,
-    encoder.encode_chars(t).size()))  #\n{} encode_chars(t)
-logger.debug("out: '{}'".format(encoder.decode(encoder.encode_chars(t))))
+    encoder.one_hot_chars(t).size()))  #\n{} one_hot_chars(t)
+logger.debug("out: '{}'".format(encoder.decode_one_hot(encoder.one_hot_chars(t))))
 logger.debug("tgt: '{}'".format(encoder.encode_shift_target(t).size()))
 
 ## Model
@@ -100,13 +100,13 @@ def train(n_epochs: int):
                 len(train_samples), len(val_samples))
     del total_samples
 
-    train_set = data.CityNames(encoder, train_samples)
+    train_set = data.CityNamesOneHot(encoder, train_samples)
     training_data_loader = DataLoader(train_set,
                                       shuffle=True,
                                       batch_size=64,
                                       collate_fn=data.pad_collate)
 
-    val_set = data.CityNames(encoder, val_samples)
+    val_set = data.CityNamesOneHot(encoder, val_samples)
     val_data_loader = DataLoader(val_set,
                                  shuffle=False,
                                  batch_size=2,
@@ -200,8 +200,8 @@ def inference():
     max_length = 20
 
     def generate_one(category, start_char='A', temperature=0.5):
-        category_input = encoder.encode_category(category).unsqueeze(0)
-        chars_input = encoder.encode_chars(start_char).unsqueeze(0)
+        category_input = encoder.one_hot_category(category).unsqueeze(0)
+        chars_input = encoder.one_hot_chars(start_char).unsqueeze(0)
 
         output_str = start_char
         logger.debug("start inferense: '%s' = '%s'", start_char,
@@ -224,7 +224,7 @@ def inference():
             else:
                 char = encoder.all_letters[top_i]
                 output_str += char
-                chars_input = encoder.encode_chars(output_str).unsqueeze(0)
+                chars_input = encoder.one_hot_chars(output_str).unsqueeze(0)
 
         return output_str
 
