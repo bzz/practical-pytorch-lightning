@@ -146,8 +146,12 @@ def main(hparams):
     hparams.output_size = len(encoder.all_letters)
 
     # runs the main training/val loop, etc...
-    model = LightningRNN(hparams)
-    trainer = Trainer(max_nb_epochs=hparams.epochs, fast_dev_run=False)
+    model = LightningRNN(hparams) # LightningRNNUsingCell
+    trainer = Trainer(max_nb_epochs=hparams.epochs,
+                      fast_dev_run=False,
+                      track_grad_norm=2,
+                      early_stop_callback=None,
+                      overfit_pct=0.0005)
     trainer.fit(model)
 
 
