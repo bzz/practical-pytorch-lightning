@@ -107,6 +107,29 @@ class LightningRNN(pl.LightningModule):
 
         return parser
 
+class LightningRNNUsingCell(LightningRNN):
+    """Uses nn.RNNCell"""
+    def __init__(self, hp):
+        super(LightningRNN, self).__init__()
+        self.hparams = hp
+
+        self.emb_size = 256
+        self.emb = torch.nn.Linear(hp.n_categories + hp.input_size,
+                                   self.emb_size)
+        self.rnn = torch.nn.RNNCell(self.emb_size, hp.hidden_size)
+        self.h2o = torch.nn.Linear(hp.hidden_size, hp.output_size)
+
+    def forward(self, category, inp):
+        h = torch.zeros(inp.shape[0],
+                        self.hparams.hidden_size).to(device=inp.device)
+        res = []
+        for i in range(inp.size()[1]):
+            input_combined = torch.cat((category, inp[:, i]), 1)
+            emb = self.emb(input_combined)
+            h = self.rnn(emb, h)
+            res.append(self.h2o(h))
+        return torch.stack(res, dim=1).view(-1, self.hparams.output_size)
+
 
 def main(hparams):
     global encoder, train_samples, val_samples
