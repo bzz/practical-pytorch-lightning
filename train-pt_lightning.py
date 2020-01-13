@@ -12,8 +12,10 @@ import torch
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, IterableDataset
 
+from pytorch_lightning.logging import TestTubeLogger
 from pytorch_lightning import Trainer
 import pytorch_lightning as pl
+
 
 SEED = 2334
 torch.manual_seed(SEED)
@@ -74,7 +76,7 @@ class LightningRNNOneHot(pl.LightningModule):
     @pl.data_loader
     def train_dataloader(self):
         return DataLoader(data.CityNamesOneHot(encoder, train_samples),
-                          shuffle=True,
+                          shuffle=False,
                           batch_size=self.hparams.batch_size,
                           collate_fn=data.pad_collate)
         # TODO(bzz): what logic belongs to the Dataset vs Problem definition?
@@ -87,7 +89,7 @@ class LightningRNNOneHot(pl.LightningModule):
     def val_dataloader(self):
         return DataLoader(data.CityNamesOneHot(encoder, val_samples),
                           shuffle=False,
-                          batch_size=2,
+                          batch_size=1,
                           collate_fn=data.pad_collate)
 
     @staticmethod
@@ -98,7 +100,7 @@ class LightningRNNOneHot(pl.LightningModule):
         # MODEL specific
         parser = ArgumentParser(parents=[parent_parser])
         parser.add_argument('--learning_rate', default=0.005, type=float)
-        parser.add_argument('--batch_size', default=64, type=int)
+        parser.add_argument('--batch_size', default=1, type=int)
         parser.add_argument('--hidden_size', default=128, type=int)
         # TODO(bzz): save hparams set as a GIN templates, to check-in
 
@@ -124,9 +126,10 @@ class LightningRNNUsingIDs(pl.LightningModule):
         self.emb_char_size = 256
         self.emb_char = torch.nn.Embedding(hp.input_size, self.emb_char_size)
 
-        self.rnn = torch.nn.RNN(input_size=self.emb_cat_size +
+        self.rnn = torch.nn.LSTM(input_size=self.emb_cat_size +
                                 self.emb_char_size,
                                 hidden_size=hp.hidden_size,
+                                num_layers=1,
                                 batch_first=True)
         self.h2o = torch.nn.Linear(hp.hidden_size, hp.output_size)
 
@@ -162,7 +165,7 @@ class LightningRNNUsingIDs(pl.LightningModule):
     @pl.data_loader
     def train_dataloader(self):
         return DataLoader(data.CityNamesIDs(encoder, train_samples),
-                          shuffle=True,
+                          shuffle=False,
                           batch_size=self.hparams.batch_size,
                           collate_fn=data.pad_collate)
 
@@ -191,7 +194,7 @@ def debug_test_dataloader(dataset):
     # import sys; sys.exit(0)
 
 
-MODULE = LightningRNNUsingIDs  #LightningRNNOneHot
+MODULE = LightningRNNOneHot #LightningRNNUsingIDs  #LightningRNNOneHot
 
 
 def main(hparams):
@@ -225,11 +228,17 @@ def main(hparams):
     model = MODULE(hparams)
     debug_test_dataloader(model.dataset)
 
+    # logger = TestTubeLogger(
+    #     save_dir='./',
+    #     name="lightning_logs",
+    #     version=4  # An existing version with a saved checkpoint
+    # )
     trainer = Trainer(max_nb_epochs=hparams.epochs,
                       fast_dev_run=False,
+                    #   logger=logger,
                       track_grad_norm=2,
                       early_stop_callback=None,
-                      overfit_pct=0.0005)
+                      overfit_pct=0.00037)
     trainer.fit(model)
 
 
