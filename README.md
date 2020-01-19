@@ -15,24 +15,34 @@ pip install -r requirement.txt
 ./download_data.sh
 ```
 
-## PT
+## PT RNN LM
 To use pure PyTorch model
 ```
 # train
 python train-pt.py --train --epoch 40
+
 # inference
 python3 train-pt.py
 ```
 
-## PTL
+## PTL RNN LM
 To train the same model using [PyTorch Lightning](https://github.com/williamFalcon/pytorch-lightning)
 ```
 python3 train-pt_lightning.py
-
-pip3 install tensorboard
 tensorboard --logdir=lightning_logs
 ```
 
+
+## PTL seq2seq
+
+seq2seq model on source code for function naming
+```
+wget 'https://s3.amazonaws.com/code-search-net/CodeSearchNet/v2/java.zip'
+unzip java.zip
+
+python3 seq2seq-code.py --data_dir="java"
+tensorboard --logdir=lightning_logs
+```
 
 ## Troubleshooting
 
