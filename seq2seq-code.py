@@ -193,6 +193,9 @@ class Seq2seqLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):  # REQUIRED
         src, tgt = batch
+        print(
+            f"{batch_idx} - y:{self.enc.decode(tgt[0])} {tgt.size()}, x:{src.size()}"
+        )
         output = self.forward(src, tgt)
 
         output = output.view(-1, output.shape[-1])
@@ -222,11 +225,11 @@ class Seq2seqLightningModule(pl.LightningModule):
     @pl.data_loader
     def train_dataloader(self):
         # TODO(bzz): change back to slower train
-        return DataLoader(CodeSearchNetRAM(self.hparams.data_dir, self.enc,
-                                           "test"),
-                          shuffle=False,
-                          batch_size=self.hparams.batch_size,
-                          collate_fn=pad_collate)
+        return DataLoader(
+            CodeSearchNetRAM(self.hparams.data_dir, self.enc, "test"),
+            shuffle=False,  # False, if no overfit_pct
+            batch_size=self.hparams.batch_size,
+            collate_fn=pad_collate)
 
     @pl.data_loader
     def val_dataloader(self):
@@ -247,20 +250,23 @@ class Seq2seqLightningModule(pl.LightningModule):
         parser.add_argument('--embedding_size', default=100, type=int)
 
         # training specific (for this model)
-        parser.add_argument('--epochs', default=100, type=int)
+        parser.add_argument('--epochs', default=10, type=int)
         return parser
 
 
 def main(hparams):
     if hparams.inspect_data:
         print("Only testing the data preprocessing")
+        split_name = "test"
         enc = SubwordTextEncoder(vocab_filepath)
-        ds = CodeSearchNetRAM(hparams.data_dir, enc, "valid")
+        ds = CodeSearchNetRAM(hparams.data_dir, enc, split_name)
         dl = DataLoader(ds,
                         batch_size=hparams.batch_size,
                         shuffle=True,
                         collate_fn=pad_collate)
-
+        print(
+            f"dataset:'{split_name}', size:{len(ds)}, batch:{hparams.batch_size}, nb_batches:{len(dl)}"
+        )
         for i, batch in enumerate(dl, 1):
             fn_code, fn_name = (batch)
             print("{} - y:{} {}, x:{}".format(i, enc.decode(fn_name[0]),
@@ -284,9 +290,9 @@ def main(hparams):
     # model.embedding.weight.data[text_encoder.PAD_ID] = torch.zeros(embedding_dim)
     # model.embedding.weight.requires_grad = False
     trainer = pl.Trainer(max_nb_epochs=hparams.epochs,
-                         fast_dev_run=True,
+                         fast_dev_run=False,
                          early_stop_callback=None,
-                         overfit_pct=0.00037)  # 1 batch
+                         overfit_pct=0.00004)  # 1 example,1 batch_size, on test
     trainer.fit(model)
 
 

@@ -35,7 +35,7 @@ tensorboard --logdir=lightning_logs
 
 ## PTL seq2seq
 
-seq2seq model on source code for function naming
+seq2seq model on source code [CodeSearchNet dataset](https://github.com/github/CodeSearchNet/blob/master/README.md#downloading-data-from-s3) for predicting function names \w [sub-word tokenizer](https://medium.com/@makcedward/how-subword-helps-on-your-nlp-model-83dd1b836f46):
 ```
 wget 'https://s3.amazonaws.com/code-search-net/CodeSearchNet/v2/java.zip'
 unzip java.zip
