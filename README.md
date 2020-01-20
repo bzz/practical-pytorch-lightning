@@ -53,6 +53,13 @@ python3 seq2seq-code.py --infer "lightning_logs/version_<X>/checkpoints/_ckpt_ep
 In case `tensorboard` does not work, try
 
 ```
+pip uninstall tb-nightly tensorboard tensorflow tensorflow-estimator
+pip install tensorboard
+```
+
+and if that does not solve the issue, do
+
+```
 wget https://raw.githubusercontent.com/tensorflow/tensorboard/master/tensorboard/tools/diagnose_tensorboard.py
 python diagnose_tensorboard.py
 ```

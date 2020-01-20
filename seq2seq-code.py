@@ -339,7 +339,9 @@ def main(hparams):
     # model.embedding.weight.data[text_encoder.PAD_ID] = torch.zeros(embedding_dim)
     # model.embedding.weight.requires_grad = False
 
-    trainer = pl.Trainer(max_nb_epochs=hparams.epochs, fast_dev_run=False)
+    trainer = pl.Trainer(max_nb_epochs=hparams.epochs,
+                         fast_dev_run=False,
+                         gpus=hparams.gpus)
     #  early_stop_callback=None,
     #  overfit_pct=0.00004)  # 1 example,1 batch_size, on test
     #  + batch_size=1, shuffle=False for proper overfitting
@@ -363,6 +365,8 @@ if __name__ == "__main__":
     parser.add_argument("--inspect_data",
                         action="store_true",
                         help="Inspect the DataLoader only")
+
+    parser.add_argument('--gpus', type=int, default=0, help='How many gpus')
 
     # each LightningModule also defines arguments relevant to it
     parser = Seq2seqLightningModule.add_model_specific_args(parser)
