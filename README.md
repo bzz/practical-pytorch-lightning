@@ -40,8 +40,12 @@ seq2seq model on source code [CodeSearchNet dataset](https://github.com/github/C
 wget 'https://s3.amazonaws.com/code-search-net/CodeSearchNet/v2/java.zip'
 unzip java.zip
 
+# train
 python3 seq2seq-code.py --data_dir="java"
 tensorboard --logdir=lightning_logs
+
+# inference (hardcoded input)
+python3 seq2seq-code.py --infer "lightning_logs/version_<X>/checkpoints/_ckpt_epoch_<N>.ckpt"
 ```
 
 ## Troubleshooting
