@@ -84,18 +84,20 @@ class CodeSearchNetRAM(Dataset):
     def __getitem__(self, idx: int):
         row = self.pd.iloc[idx]
 
-        # TODO(bzz): drop class name
+        # cut, drop class name
         fn_name = row["func_name"][:self.cut]
+        fn_name = fn_name.split('.')[-1]  # drop the class name
         fn_name_enc = self.enc.encode(fn_name) + [text_encoder.EOS_ID]
 
-        # TODO(bzz): drop fn_name
-        fn_code = row["code"][:self.cut]
-        fn_code_enc = self.enc.encode(fn_code)
+        # cut, drop fn signature
+        code = row["code"][:self.cut]
+        fn_body = code[code.find("{") + 1:code.find("}")].lstrip().rstrip()
+        fn_body_enc = self.enc.encode(fn_body) + [text_encoder.EOS_ID]
 
         # fn_code_enc_p = fn_code[:20].replace("\n", "\\n")
         # print(f"name:{fn_name}, code:{fn_code_enc_p}")
 
-        return (torch.LongTensor(fn_code_enc), torch.LongTensor(fn_name_enc))
+        return (torch.LongTensor(fn_body_enc), torch.LongTensor(fn_name_enc))
 
     def __len__(self):
         return len(self.pd)
@@ -278,10 +280,10 @@ def main(hparams):
         )
         for i, batch in enumerate(dl, 1):
             fn_code, fn_name = (batch)
-            print("{} - y:{} {}, x:{}".format(i, enc.decode(fn_name[0]),
-                                              fn_name.size(),
-                                              fn_code.size()))  # str()[:10]
-            if i == 2:
+            code = enc.decode(fn_code[0])[:30].replace("\n", "\\n")
+            print(f"{i} - y:{enc.decode(fn_name[0])} {fn_name.size()}, x:{code}"
+                 )  # str()[:10]
+            if i == 4:
                 break
         return
 
@@ -289,25 +291,28 @@ def main(hparams):
         # TODO(bzz): load from checkpoint, run inference
         print("Only running the inference")
         pretrained_model = Seq2seqLightningModule.load_from_checkpoint(
-            checkpoint_path=
-            'lightning_logs/version_5/checkpoints/_ckpt_epoch_20.ckpt')
+            checkpoint_path=hparams.infer)
         # predict
         pretrained_model.eval()
         pretrained_model.freeze()
         enc = SubwordTextEncoder(vocab_filepath)
 
-        inp = "@Override\n  protected final char[] "
-        inp_enc = enc.encode(inp)
+        inp = "if (cp < replacementsLength) {\n      char[] chars = replacements[cp];"
+        inp_enc = enc.encode(inp) + [text_encoder.EOS_ID]
         inp_vec = torch.LongTensor(inp_enc).unsqueeze_(0)
         print(f"in:'{inp}'")
         print(f"inp_enc:{inp_enc}")
 
         # Questions:
         #  Role of BOS: who adds it, preprocessing or decoder? Why not only EOS?
+        #     does not matter, as soon as same vocab
         #  Teacher forcing VS advanced search in Decoder on training (BEAM, etc)?
+        #     should be differential! default summing works
+        #     schedulle for moving from TF to none
         #  initial input for the decoder? \w and \wo forcing
         output = pretrained_model(inp_vec)
         output = output.detach().squeeze(0)
+
         # print(f"out_dec:'{output.size()}''")
 
         def generate(output: torch.Tensor, temperature=0.5) -> List[int]:
@@ -324,7 +329,7 @@ def main(hparams):
 
         out_enc = generate(output, 0.5)
         print(f"out_enc:{out_enc}")
-        print(f"out:'{enc.decode(out_enc)}''")
+        print(f"out:'{enc.decode(out_enc)}'")
         return
 
     # Training
@@ -351,7 +356,9 @@ if __name__ == "__main__":
     # parser.add_argument('--gpus', type=str, default=None)
 
     parser.add_argument("--infer",
-                        action="store_true",
+                        default=None,
+                        type=str,
+                        metavar='MODE_FILE',
                         help="Run the inference only")
 
     parser.add_argument("--inspect_data",
