@@ -229,24 +229,33 @@ class Seq2seqLightningModule(pl.LightningModule):
         return {'avg_val_loss': avg_loss, 'log': tensorboard_logs}
 
     def configure_optimizers(self):  # REQUIRED
-        return torch.optim.Adam(self.parameters(),
-                                lr=self.hparams.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(),
+                                     lr=self.hparams.learning_rate)
+        return optimizer
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
+        #                                                        T_max=10)
+        # return [optimizer], [scheduler]
 
     @pl.data_loader
     def train_dataloader(self):
-        # TODO(bzz): change back to slower train
-        return DataLoader(
-            CodeSearchNetRAM(self.hparams.data_dir, self.enc, "test"),
-            shuffle=False,  # False, if no overfit_pct
+        split = "test"  # TODO(bzz): change back to "train"
+        ds = CodeSearchNetRAM(self.hparams.data_dir, self.enc, split)
+        dl = DataLoader(
+            ds,
+            shuffle=True,  # False, if overfit_pct
             batch_size=self.hparams.batch_size,
             collate_fn=pad_collate)
+        print(
+            f"dataset:'{split}', size:{len(ds)}, batch:{self.hparams.batch_size}, nb_batches:{len(dl)}"
+        )
+        return dl
 
     @pl.data_loader
     def val_dataloader(self):
         return DataLoader(CodeSearchNetRAM(self.hparams.data_dir, self.enc,
                                            "valid"),
                           shuffle=False,
-                          batch_size=2,
+                          batch_size=self.hparams.batch_size,
                           collate_fn=pad_collate)
 
     @staticmethod
@@ -255,13 +264,13 @@ class Seq2seqLightningModule(pl.LightningModule):
         # MODEL specific
         parser = ArgumentParser(parents=[parent_parser])
         parser.add_argument('--learning_rate', default=0.005, type=float)
-        parser.add_argument('--batch_size', default=1, type=int)
+        parser.add_argument('--batch_size', default=64, type=int)
         parser.add_argument('--hidden_size', default=128, type=int)
         parser.add_argument('--embedding_size', default=100, type=int)
         parser.add_argument('--max_len', default=CodeSearchNetRAM.cut, type=int)
 
         # training specific (for this model)
-        parser.add_argument('--epochs', default=10, type=int)
+        parser.add_argument('--epochs', default=100, type=int)
         return parser
 
 
@@ -281,18 +290,15 @@ def main(hparams):
         for i, batch in enumerate(dl, 1):
             fn_code, fn_name = (batch)
             code = enc.decode(fn_code[0])[:30].replace("\n", "\\n")
-            print(f"{i} - y:{enc.decode(fn_name[0])} {fn_name.size()}, x:{code}"
-                 )  # str()[:10]
+            print(f"{i} y:{enc.decode(fn_name[0])} {fn_name.size()}, x:{code}")
             if i == 4:
                 break
         return
 
     if hparams.infer:
-        # TODO(bzz): load from checkpoint, run inference
         print("Only running the inference")
         pretrained_model = Seq2seqLightningModule.load_from_checkpoint(
             checkpoint_path=hparams.infer)
-        # predict
         pretrained_model.eval()
         pretrained_model.freeze()
         enc = SubwordTextEncoder(vocab_filepath)
@@ -300,28 +306,18 @@ def main(hparams):
         inp = "if (cp < replacementsLength) {\n      char[] chars = replacements[cp];"
         inp_enc = enc.encode(inp) + [text_encoder.EOS_ID]
         inp_vec = torch.LongTensor(inp_enc).unsqueeze_(0)
-        print(f"in:'{inp}'")
-        print(f"inp_enc:{inp_enc}")
+        # print(f"in:'{inp}'")
+        # print(f"inp_enc:{inp_enc}")
 
-        # Questions:
-        #  Role of BOS: who adds it, preprocessing or decoder? Why not only EOS?
-        #     does not matter, as soon as same vocab
-        #  Teacher forcing VS advanced search in Decoder on training (BEAM, etc)?
-        #     should be differential! default summing works
-        #     schedulle for moving from TF to none
-        #  initial input for the decoder? \w and \wo forcing
+        # predict
         output = pretrained_model(inp_vec)
         output = output.detach().squeeze(0)
-
-        # print(f"out_dec:'{output.size()}''")
 
         def generate(output: torch.Tensor, temperature=0.5) -> List[int]:
             res = []
             for i in range(output.size(0)):
                 output_dist = output.data[i].div(temperature).exp()
-                # print(f"next prediction: '{output_dist.size()}'")
                 top_i = torch.multinomial(output_dist, 1)[0]
-                # print(f"next prediction argmax: '{top_i}'")
                 if top_i == text_encoder.EOS_ID:
                     break
                 res.append(top_i)
@@ -342,17 +338,20 @@ def main(hparams):
     # model.embedding.weight.data[text_encoder.UNK_ID] = torch.zeros(embedding_dim)
     # model.embedding.weight.data[text_encoder.PAD_ID] = torch.zeros(embedding_dim)
     # model.embedding.weight.requires_grad = False
-    trainer = pl.Trainer(max_nb_epochs=hparams.epochs,
-                         fast_dev_run=False,
-                         early_stop_callback=None,
-                         overfit_pct=0.00004)  # 1 example,1 batch_size, on test
+
+    trainer = pl.Trainer(max_nb_epochs=hparams.epochs, fast_dev_run=False)
+    #  early_stop_callback=None,
+    #  overfit_pct=0.00004)  # 1 example,1 batch_size, on test
+    #  + batch_size=1, shuffle=False for proper overfitting
     trainer.fit(model)
 
 
 if __name__ == "__main__":
     # project-wide training arguments, eg
     parser = ArgumentParser(add_help=False)
-    parser.add_argument('--data_dir', type=str, default="./data/codesearchnet")
+    parser.add_argument('--data_dir',
+                        type=str,
+                        default="./data/codesearchnet/java")
     # parser.add_argument('--gpus', type=str, default=None)
 
     parser.add_argument("--infer",
