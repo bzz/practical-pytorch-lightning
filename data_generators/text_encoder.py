@@ -23,6 +23,8 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+from typing import Dict, List, Tuple
+
 import collections
 from itertools import chain
 import math
@@ -269,7 +271,7 @@ class SubwordTextEncoder(TextEncoder):
       self._load_from_file(filename)
     super(SubwordTextEncoder, self).__init__()
 
-  def encode(self, s):
+  def encode(self, s) -> List[int]:
     """Converts a native string to a list of subtoken ids.
 
     Args:
@@ -297,7 +299,7 @@ class SubwordTextEncoder(TextEncoder):
     """
     return self._tokens_to_subtoken_ids([native_to_unicode(token_text)])
 
-  def decode(self, ids, strip_extraneous=False):
+  def decode(self, ids: List[int], strip_extraneous=False):
     """Converts a sequence of subtoken ids to a native string.
 
     Args:
@@ -321,7 +323,7 @@ class SubwordTextEncoder(TextEncoder):
     """The subtoken vocabulary size."""
     return len(self._all_subtoken_strings)
 
-  def _tokens_to_subtoken_ids(self, tokens):
+  def _tokens_to_subtoken_ids(self, tokens) -> List[int]:
     """Converts a list of tokens to a list of subtoken ids.
 
     Args:

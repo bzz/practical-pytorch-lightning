@@ -1,28 +1,27 @@
 #!/usr/bin/env python3
 # coding=utf-8
 """
-PyTorch-lightning (PTL) implementation of seq2seq architecture for 
+PyTorch-lightning (PTL) implementation of seq2seq architecture for
 function name suggestions.
 """
-from typing import Dict, List, Tuple
-
-import os
 import glob
-import time
 import logging
+import os
+import time
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import Dict, List, Tuple
 
-from data_generators import text_encoder
-from data_generators.text_encoder import TextEncoder, SubwordTextEncoder
-
+import numpy as np
+import pandas as pd
+import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
-import numpy as np
-import pandas as pd
-import pytorch_lightning as pl
+
+from data_generators import text_encoder
+from data_generators.text_encoder import SubwordTextEncoder, TextEncoder
 
 SEED = 2334
 torch.manual_seed(SEED)
@@ -84,8 +83,19 @@ class CodeSearchNetRAM(Dataset):
 
     def __getitem__(self, idx: int):
         row = self.pd.iloc[idx]
-        return (torch.LongTensor(self.enc.encode(row["code"][:self.cut])),
-                torch.LongTensor(self.enc.encode(row["func_name"][:self.cut])))
+
+        # TODO(bzz): drop class name
+        fn_name = row["func_name"][:self.cut]
+        fn_name_enc = self.enc.encode(fn_name) + [text_encoder.EOS_ID]
+
+        # TODO(bzz): drop fn_name
+        fn_code = row["code"][:self.cut]
+        fn_code_enc = self.enc.encode(fn_code)
+
+        # fn_code_enc_p = fn_code[:20].replace("\n", "\\n")
+        # print(f"name:{fn_name}, code:{fn_code_enc_p}")
+
+        return (torch.LongTensor(fn_code_enc), torch.LongTensor(fn_name_enc))
 
     def __len__(self):
         return len(self.pd)
@@ -120,10 +130,11 @@ class EncoderRNN(pl.LightningModule):
 
 class DecoderRNN(pl.LightningModule):
 
-    def __init__(self, embed, embed_size, hidden_size, output_size):
+    def __init__(self, embed, embed_size, hidden_size, output_size, max_len):
         super(DecoderRNN, self).__init__()
         self.hidden_size = hidden_size
         self.output_size = output_size
+        self.max_len = max_len
 
         self.embed = embed
         self.rnn = nn.GRU(embed_size, hidden_size, batch_first=True)
@@ -133,15 +144,13 @@ class DecoderRNN(pl.LightningModule):
         del encoder_output  # TODO(bzz): use it for Attention
 
         emb = self.embed(input)
-        # print(f"\temb:{emb.size()}, hid:{hidden.size()}")
         o, h = self.rnn(emb, hidden)
         out = self.out(o)
-        # print(f"\t\trnn_out:{o.size()}, rnn_hid:{h.size()}, out:{out.size()}")
-        return F.log_softmax(out, dim=1), h
+        return F.log_softmax(out, dim=-1), h
 
-    def forward(self, inp, enc_h, enc_out):
-        batch_size = inp.size(0)
-        max_seq_len = inp.size(1)
+    def forward(self, enc_h, enc_out, tgt=None):
+        batch_size = tgt.size(0) if tgt is not None else 1
+        max_seq_len = tgt.size(1) if tgt is not None else self.max_len
 
         decoder_outputs = []
         decoder_hidden = enc_h  # TODO(bzz): transform/concat in case of N layers/2 directions
@@ -149,7 +158,7 @@ class DecoderRNN(pl.LightningModule):
         # TODO(bzz): add teacher-forcing like e.g
         # https://github.com/IBM/pytorch-seq2seq/blob/f146087a9a271e9b50f46561e090324764b081fb/seq2seq/models/DecoderRNN.py#L140
         decoder_input = torch.LongTensor([batch_size * [text_encoder.BOS_ID]
-                                         ]).view(batch_size, 1).to(inp.device)
+                                         ]).view(batch_size, 1).to(enc_h.device)
         # print(f"dec_inp:{decoder_input.size()}, dec_h:{decoder_hidden.size()}, enc_out:{enc_out.size()}")
 
         for t in range(max_seq_len):  # TODO(bzz): unroll in graph&compare
@@ -159,7 +168,6 @@ class DecoderRNN(pl.LightningModule):
             step_output = decoder_output.squeeze(1)
             decoder_outputs.append(step_output)
             decoder_input = self._decode(t, step_output)
-
             # print(f"\t\tdecoded output:{len(decoder_outputs)}, next:{decoder_input.size()}")
 
         return torch.stack(decoder_outputs, dim=1), decoder_hidden
@@ -172,31 +180,31 @@ class DecoderRNN(pl.LightningModule):
 
 class Seq2seqLightningModule(pl.LightningModule):
 
-    def __init__(self, enc: text_encoder.TextEncoder, hp: Dict):
+    def __init__(self, hp: Dict, enc: text_encoder.TextEncoder = None):
         super(Seq2seqLightningModule, self).__init__()
         self.enc = enc
         self.hparams = hp
 
         # share embedding layer by encoder and decoder
-        self.embed = nn.Embedding(enc.vocab_size, hp.embedding_size)
+        self.embed = nn.Embedding(hp.vocab_size, hp.embedding_size)
         # or pass in vocab_size and create encoder embeddings inside
         self.encoder = EncoderRNN(hp.hidden_size, hp.embedding_size, self.embed)
         self.decoder = DecoderRNN(self.embed, hp.embedding_size, hp.hidden_size,
-                                  enc.vocab_size)
+                                  hp.vocab_size, hp.max_len)
         self.criterion = nn.NLLLoss()
 
-    def forward(self, src, tgt):
+    def forward(self, src, tgt=None):
         encoder_output, encoder_hidden = self.encoder(src)
-        # print(f"src:{src.size()}, tgt:{tgt.size()}, enc_out:{encoder_output.size()}, enc_h:{encoder_hidden.size()}")
-        outputs, hidden = self.decoder(tgt, encoder_hidden, encoder_output)
+        outputs, hidden = self.decoder(encoder_hidden, encoder_output, tgt)
         return outputs
 
     def training_step(self, batch, batch_idx):  # REQUIRED
         src, tgt = batch
-        print(
-            f"{batch_idx} - y:{self.enc.decode(tgt[0])} {tgt.size()}, x:{src.size()}"
-        )
         output = self.forward(src, tgt)
+
+        # print(f"{batch_idx} - y:{tgt.size()}, x:{src.size()}")
+        # src_dec = self.enc.decode(src[0])[:40].replace('\n', '\\n')
+        # print(f"\t {self.enc.decode(tgt[0])}, {src_dec}")
 
         output = output.view(-1, output.shape[-1])
         target = tgt.view(-1)
@@ -248,6 +256,7 @@ class Seq2seqLightningModule(pl.LightningModule):
         parser.add_argument('--batch_size', default=1, type=int)
         parser.add_argument('--hidden_size', default=128, type=int)
         parser.add_argument('--embedding_size', default=100, type=int)
+        parser.add_argument('--max_len', default=CodeSearchNetRAM.cut, type=int)
 
         # training specific (for this model)
         parser.add_argument('--epochs', default=10, type=int)
@@ -278,11 +287,50 @@ def main(hparams):
 
     if hparams.infer:
         # TODO(bzz): load from checkpoint, run inference
+        print("Only running the inference")
+        pretrained_model = Seq2seqLightningModule.load_from_checkpoint(
+            checkpoint_path=
+            'lightning_logs/version_5/checkpoints/_ckpt_epoch_20.ckpt')
+        # predict
+        pretrained_model.eval()
+        pretrained_model.freeze()
+        enc = SubwordTextEncoder(vocab_filepath)
+
+        inp = "@Override\n  protected final char[] "
+        inp_enc = enc.encode(inp)
+        inp_vec = torch.LongTensor(inp_enc).unsqueeze_(0)
+        print(f"in:'{inp}'")
+        print(f"inp_enc:{inp_enc}")
+
+        # Questions:
+        #  Role of BOS: who adds it, preprocessing or decoder? Why not only EOS?
+        #  Teacher forcing VS advanced search in Decoder on training (BEAM, etc)?
+        #  initial input for the decoder? \w and \wo forcing
+        output = pretrained_model(inp_vec)
+        output = output.detach().squeeze(0)
+        # print(f"out_dec:'{output.size()}''")
+
+        def generate(output: torch.Tensor, temperature=0.5) -> List[int]:
+            res = []
+            for i in range(output.size(0)):
+                output_dist = output.data[i].div(temperature).exp()
+                # print(f"next prediction: '{output_dist.size()}'")
+                top_i = torch.multinomial(output_dist, 1)[0]
+                # print(f"next prediction argmax: '{top_i}'")
+                if top_i == text_encoder.EOS_ID:
+                    break
+                res.append(top_i)
+            return res
+
+        out_enc = generate(output, 0.5)
+        print(f"out_enc:{out_enc}")
+        print(f"out:'{enc.decode(out_enc)}''")
         return
 
     # Training
     enc = SubwordTextEncoder(vocab_filepath)
-    model = Seq2seqLightningModule(enc, hparams)
+    hparams.vocab_size = enc.vocab_size
+    model = Seq2seqLightningModule(hparams, enc)
     # TODO(bzz): load pre-trained embeddings (+ exclude from optimizer)
     # pretrained_embeddings = "<some vectors>"
     # model.embedding.weight.data.copy_(pretrained_embeddings)
