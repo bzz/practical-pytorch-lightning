@@ -193,7 +193,7 @@ class Seq2seqLightningModule(pl.LightningModule):
         self.encoder = EncoderRNN(hp.hidden_size, hp.embedding_size, self.embed)
         self.decoder = DecoderRNN(self.embed, hp.embedding_size, hp.hidden_size,
                                   hp.vocab_size, hp.max_len)
-        self.criterion = nn.NLLLoss()
+        self.criterion = nn.NLLLoss(ignore_index=text_encoder.PAD_ID)
 
     def forward(self, src, tgt=None):
         encoder_output, encoder_hidden = self.encoder(src)
