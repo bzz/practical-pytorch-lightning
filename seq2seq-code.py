@@ -8,7 +8,7 @@ import glob
 import logging
 import os
 import time
-from argparse import ArgumentParser
+from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -229,8 +229,7 @@ class Seq2seqLightningModule(pl.LightningModule):
         return {'avg_val_loss': avg_loss, 'log': tensorboard_logs}
 
     def configure_optimizers(self):  # REQUIRED
-        optimizer = torch.optim.Adam(self.parameters(),
-                                     lr=self.hparams.learning_rate)
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
         # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
         #                                                        T_max=10)
@@ -262,15 +261,34 @@ class Seq2seqLightningModule(pl.LightningModule):
     def add_model_specific_args(parent_parser):
         """Specify the hyperparams for this LightningModule"""
         # MODEL specific
-        parser = ArgumentParser(parents=[parent_parser])
-        parser.add_argument('--learning_rate', default=0.005, type=float)
-        parser.add_argument('--batch_size', default=64, type=int)
-        parser.add_argument('--hidden_size', default=128, type=int)
-        parser.add_argument('--embedding_size', default=100, type=int)
-        parser.add_argument('--max_len', default=CodeSearchNetRAM.cut, type=int)
+        parser = ArgumentParser(parents=[parent_parser],
+                                formatter_class=ArgumentDefaultsHelpFormatter)
+        parser.add_argument('--lr',
+                            default=0.005,
+                            type=float,
+                            help="learning rate")
+        parser.add_argument('--batch_size',
+                            default=64,
+                            type=int,
+                            help="Size of the batch")
+        parser.add_argument('--hidden_size',
+                            default=128,
+                            type=int,
+                            help="Size of the hidden layers")
+        parser.add_argument('--embedding_size',
+                            default=100,
+                            type=int,
+                            help="Size of the (shared) embeddings")
+        parser.add_argument('--max_len',
+                            default=CodeSearchNetRAM.cut,
+                            type=int,
+                            help="Max sequence length")
 
         # training specific (for this model)
-        parser.add_argument('--epochs', default=100, type=int)
+        parser.add_argument('--epochs',
+                            default=100,
+                            type=int,
+                            help="Max number of expocs")
         return parser
 
 
@@ -353,7 +371,8 @@ if __name__ == "__main__":
     parser = ArgumentParser(add_help=False)
     parser.add_argument('--data_dir',
                         type=str,
-                        default="./data/codesearchnet/java")
+                        default="./data/codesearchnet/java",
+                        help="Path to the unzip input data (CodeSearchNet)")
     # parser.add_argument('--gpus', type=str, default=None)
 
     parser.add_argument("--infer",
