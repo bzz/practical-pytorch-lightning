@@ -6,6 +6,7 @@ function name suggestions.
 """
 import glob
 import logging
+import math
 import os
 import time
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter
@@ -218,15 +219,49 @@ class Seq2seqLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_nb):  # OPTIONAL
         src, tgt = batch
         output = self.forward(src, tgt)
-        return {
-            'val_loss':
-                self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
-        }
+
+        logits = output.view(-1, output.shape[-1])
+        loss = self.criterion(logits, tgt.view(-1))
+        return self.metrics(loss, logits, tgt.view(-1))
+
+    @staticmethod
+    def metrics(loss, logits, labels):
+        preds = torch.argmax(logits, dim=1)
+        acc = (labels == preds).float().mean()
+
+        clss = logits.size(1)
+        cm = torch.zeros((clss, clss), device=loss.device)
+        for label, pred in zip(labels, preds):
+            cm[label.long(), pred.long()] += 1
+
+        tp = cm.diagonal()[1:].sum()
+        fp = cm[:, 1:].sum() - tp
+        fn = cm[1:, :].sum() - tp
+        return {'val_loss': loss, 'val_acc': acc, 'tp': tp, 'fp': fp, 'fn': fn}
 
     def validation_end(self, outputs):  # OPTIONAL
         avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
-        tensorboard_logs = {'val_loss': avg_loss}
-        return {'avg_val_loss': avg_loss, 'log': tensorboard_logs}
+        tb_logs = {'val_loss': avg_loss, 'ppl': math.exp(avg_loss)}
+
+        tb_logs['acc'] = torch.stack([x['val_acc'] for x in outputs]).mean()
+        total = {}
+        for metric_name in ['tp', 'fp', 'fn']:
+            metric_value = torch.stack([x[metric_name] for x in outputs]).sum()
+            total[metric_name] = metric_value
+
+        prec_rec_f1 = self.f1_score(total['tp'], total['fp'], total['fn'])
+        tb_logs.update(prec_rec_f1)
+        return {'avg_val_loss': avg_loss, 'log': tb_logs}
+
+    @staticmethod
+    def f1_score(tp, fp, fn):
+        prec_rec_f1 = {}
+        prec_rec_f1['precision'] = tp / (tp + fp)
+        prec_rec_f1['recall'] = tp / (tp + fn)
+        prec_rec_f1['f1_score'] = 2 * (
+            prec_rec_f1['precision'] * prec_rec_f1['recall']) / (
+                prec_rec_f1['precision'] + prec_rec_f1['recall'])
+        return prec_rec_f1
 
     def configure_optimizers(self):  # REQUIRED
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
