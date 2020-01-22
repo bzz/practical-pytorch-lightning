@@ -21,6 +21,7 @@ from torch import nn
 from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset
 
+import metrics
 from data_generators import text_encoder
 from data_generators.text_encoder import SubwordTextEncoder, TextEncoder
 
@@ -222,21 +223,7 @@ class Seq2seqLightningModule(pl.LightningModule):
 
         logits = output.view(-1, output.shape[-1])
         loss = self.criterion(logits, tgt.view(-1))
-        return self.metrics(loss, logits, tgt.view(-1))
-
-    @staticmethod
-    def metrics(loss, logits, labels):
-        preds = torch.argmax(logits, dim=1)
-        acc = (labels == preds).float().mean()
-
-        clss = logits.size(1)
-        cm = torch.zeros((clss, clss), device=loss.device)
-        for label, pred in zip(labels, preds):
-            cm[label.long(), pred.long()] += 1
-
-        tp = cm.diagonal()[1:].sum()
-        fp = cm[:, 1:].sum() - tp
-        fn = cm[1:, :].sum() - tp
+        (acc, tp, fp, fn) = metrics.acc_cm(logits, tgt.view(-1))
         return {'val_loss': loss, 'val_acc': acc, 'tp': tp, 'fp': fp, 'fn': fn}
 
     def validation_end(self, outputs):  # OPTIONAL
@@ -249,25 +236,14 @@ class Seq2seqLightningModule(pl.LightningModule):
             metric_value = torch.stack([x[metric_name] for x in outputs]).sum()
             total[metric_name] = metric_value
 
-        prec_rec_f1 = self.f1_score(total['tp'], total['fp'], total['fn'])
+        prec_rec_f1 = metrics.f1_score(total['tp'], total['fp'], total['fn'])
         tb_logs.update(prec_rec_f1)
         return {'avg_val_loss': avg_loss, 'log': tb_logs}
-
-    @staticmethod
-    def f1_score(tp, fp, fn):
-        prec_rec_f1 = {}
-        prec_rec_f1['precision'] = tp / (tp + fp)
-        prec_rec_f1['recall'] = tp / (tp + fn)
-        prec_rec_f1['f1_score'] = 2 * (
-            prec_rec_f1['precision'] * prec_rec_f1['recall']) / (
-                prec_rec_f1['precision'] + prec_rec_f1['recall'])
-        return prec_rec_f1
 
     def configure_optimizers(self):  # REQUIRED
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
-        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,
-        #                                                        T_max=10)
+        # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=10)
         # return [optimizer], [scheduler]
 
     @pl.data_loader
