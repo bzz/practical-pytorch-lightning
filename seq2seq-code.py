@@ -89,7 +89,8 @@ class CodeSearchNetRAM(Dataset):
         # cut, drop class name
         fn_name = row["func_name"][:self.cut]
         fn_name = fn_name.split('.')[-1]  # drop the class name
-        fn_name_enc = self.enc.encode(fn_name) + [text_encoder.EOS_ID]
+        fn_name_enc = [text_encoder.BOS_ID
+                      ] + self.enc.encode(fn_name) + [text_encoder.EOS_ID]
 
         # cut, drop fn signature
         code = row["code"][:self.cut]
@@ -153,33 +154,19 @@ class DecoderRNN(pl.LightningModule):
         return F.log_softmax(out, dim=-1), h
 
     def forward(self, enc_h, enc_out, tgt=None):
-        batch_size = tgt.size(0) if tgt is not None else 1
-        max_seq_len = tgt.size(1) if tgt is not None else self.max_len
-
-        decoder_outputs = []
+        # teacher forcing
+        decoder_input = tgt
+        if tgt is None:  # inference
+            batch_size = tgt.size(0) if tgt is not None else 1
+            decoder_input = torch.LongTensor(
+                [batch_size * [text_encoder.BOS_ID]]).view(batch_size,
+                                                           1).to(enc_h.device)
         decoder_hidden = enc_h  # TODO(bzz): transform/concat in case of N layers/2 directions
 
-        # TODO(bzz): add teacher-forcing like e.g
-        # https://github.com/IBM/pytorch-seq2seq/blob/f146087a9a271e9b50f46561e090324764b081fb/seq2seq/models/DecoderRNN.py#L140
-        decoder_input = torch.LongTensor([batch_size * [text_encoder.BOS_ID]
-                                         ]).view(batch_size, 1).to(enc_h.device)
-        # print(f"dec_inp:{decoder_input.size()}, dec_h:{decoder_hidden.size()}, enc_out:{enc_out.size()}")
+        decoder_output, decoder_hidden = self.forward_setp(
+            decoder_input, decoder_hidden, enc_out)
 
-        for t in range(max_seq_len):  # TODO(bzz): unroll in graph&compare
-            decoder_output, decoder_hidden = self.forward_setp(
-                decoder_input, decoder_hidden, enc_out)
-
-            step_output = decoder_output.squeeze(1)
-            decoder_outputs.append(step_output)
-            decoder_input = self._decode(t, step_output)
-            # print(f"\t\tdecoded output:{len(decoder_outputs)}, next:{decoder_input.size()}")
-
-        return torch.stack(decoder_outputs, dim=1), decoder_hidden
-
-    @staticmethod
-    def _decode(step: int, step_output):
-        ids = step_output.topk(1)[1]
-        return ids
+        return decoder_output, decoder_hidden
 
 
 class Seq2seqLightningModule(pl.LightningModule):
@@ -190,7 +177,9 @@ class Seq2seqLightningModule(pl.LightningModule):
         self.hparams = hp
 
         # share embedding layer by encoder and decoder
-        self.embed = nn.Embedding(hp.vocab_size, hp.embedding_size)
+        self.embed = nn.Embedding(hp.vocab_size,
+                                  hp.embedding_size,
+                                  padding_idx=text_encoder.PAD_ID)
         # or pass in vocab_size and create encoder embeddings inside
         self.encoder = EncoderRNN(hp.hidden_size, hp.embedding_size, self.embed)
         self.decoder = DecoderRNN(self.embed, hp.embedding_size, hp.hidden_size,
@@ -204,21 +193,20 @@ class Seq2seqLightningModule(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):  # REQUIRED
         src, tgt = batch
-        output = self.forward(src, tgt)
-
-        # print(f"{batch_idx} - y:{tgt.size()}, x:{src.size()}")
+        # print(f"batch:{batch_idx}, y:{tgt.size()}, x:{src.size()}")
         # src_dec = self.enc.decode(src[0])[:40].replace('\n', '\\n')
         # print(f"\t {self.enc.decode(tgt[0])}, {src_dec}")
 
-        output = output.view(-1, output.shape[-1])
-        target = tgt.view(-1)
-        loss = self.criterion(output, target)
+        output = self.forward(src, tgt)
+        loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
 
         tensorboard_logs = {'train_loss': loss}
         return {'loss': loss, 'log': tensorboard_logs}
 
-    def validation_step(self, batch, batch_nb):  # OPTIONAL
+    def validation_step(self, batch, batch_idx):  # OPTIONAL
         src, tgt = batch
+        # print(f"batch:{batch_idx}, y:{tgt.size()}, x:{src.size()}")
+
         output = self.forward(src, tgt)
         loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
 
@@ -382,8 +370,8 @@ def main(hparams):
     trainer = pl.Trainer(max_nb_epochs=hparams.epochs,
                          fast_dev_run=False,
                          gpus=hparams.gpus)
-    #  early_stop_callback=None,
-    #  overfit_pct=0.00004)  # 1 example,1 batch_size, on test
+                        #  early_stop_callback=None,
+                        #  overfit_pct=0.00004)  # 1 example,1 batch_size, on test
     #  + batch_size=1, shuffle=False for proper overfitting
     trainer.fit(model)
 
