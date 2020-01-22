@@ -8,13 +8,11 @@ import numpy as np
 import torch
 
 
-def acc_cm(logits, labels):
+def acc_cm(preds, labels, nb_clss):
     """Calculates all confusion matrix based metrics."""
-    preds = torch.argmax(logits, dim=1)
     acc = (labels == preds).float().mean()
 
-    clss = logits.size(1)
-    cm = torch.zeros((clss, clss), device=labels.device)
+    cm = torch.zeros((nb_clss, nb_clss), device=labels.device)
     for label, pred in zip(labels, preds):
         cm[label.long(), pred.long()] += 1
 

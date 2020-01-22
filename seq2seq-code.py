@@ -220,17 +220,28 @@ class Seq2seqLightningModule(pl.LightningModule):
     def validation_step(self, batch, batch_nb):  # OPTIONAL
         src, tgt = batch
         output = self.forward(src, tgt)
+        loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
 
-        logits = output.view(-1, output.shape[-1])
-        loss = self.criterion(logits, tgt.view(-1))
-        (acc, tp, fp, fn) = metrics.acc_cm(logits, tgt.view(-1))
-        return {'val_loss': loss, 'val_acc': acc, 'tp': tp, 'fp': fp, 'fn': fn}
+        # metrics
+        preds = torch.argmax(output, dim=-1)
+        (acc, tp, fp, fn) = metrics.acc_cm(preds, tgt, output.size(-1))
+        bleu = metrics.compute_bleu(tgt.tolist(), preds.tolist())
+        return {
+            'val_loss': loss,
+            'val_acc': acc,
+            'tp': tp,
+            'fp': fp,
+            'fn': fn,
+            'bleu': bleu
+        }
 
     def validation_end(self, outputs):  # OPTIONAL
         avg_loss = torch.stack([x['val_loss'] for x in outputs]).mean()
         tb_logs = {'val_loss': avg_loss, 'ppl': math.exp(avg_loss)}
 
         tb_logs['acc'] = torch.stack([x['val_acc'] for x in outputs]).mean()
+        tb_logs['bleu'] = np.mean([x['bleu'] for x in outputs])
+
         total = {}
         for metric_name in ['tp', 'fp', 'fn']:
             metric_value = torch.stack([x[metric_name] for x in outputs]).sum()
