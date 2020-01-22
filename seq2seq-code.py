@@ -239,6 +239,12 @@ class Seq2seqLightningModule(pl.LightningModule):
         tb_logs.update(prec_rec_f1)
         return {'avg_val_loss': avg_loss, 'log': tb_logs}
 
+    def test_step(self, batch, batch_idx):
+        return self.validation_step(batch, batch_idx)
+
+    def test_end(self, outputs):
+        return self.validation_end(outputs)
+
     def configure_optimizers(self):  # REQUIRED
         optimizer = torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
         return optimizer
@@ -264,6 +270,14 @@ class Seq2seqLightningModule(pl.LightningModule):
         return DataLoader(CodeSearchNetRAM(self.hparams.data_dir, self.enc,
                                            "valid"),
                           shuffle=False,
+                          batch_size=self.hparams.batch_size,
+                          collate_fn=pad_collate)
+
+    @pl.data_loader
+    def test_dataloader(self):
+        return DataLoader(CodeSearchNetRAM(self.hparams.data_dir, self.enc,
+                                           "test"),
+                          shuffle=True,
                           batch_size=self.hparams.batch_size,
                           collate_fn=pad_collate)
 
@@ -296,7 +310,7 @@ class Seq2seqLightningModule(pl.LightningModule):
 
         # training specific (for this model)
         parser.add_argument('--epochs',
-                            default=100,
+                            default=30,
                             type=int,
                             help="Max number of expocs")
         return parser
@@ -326,7 +340,7 @@ def main(hparams):
     if hparams.infer:
         print("Only running the inference")
         pretrained_model = Seq2seqLightningModule.load_from_checkpoint(
-            checkpoint_path=hparams.infer)
+            checkpoint_path=hparams.model)
         pretrained_model.eval()
         pretrained_model.freeze()
         enc = SubwordTextEncoder(vocab_filepath)
@@ -356,6 +370,18 @@ def main(hparams):
         print(f"out:'{enc.decode(out_enc)}'")
         return
 
+    if hparams.test:
+        test_pct = 0.01
+        print(f"Only runing evaluation on {test_pct*100}% of the test set")
+        model = Seq2seqLightningModule.load_from_checkpoint(
+            checkpoint_path=hparams.model)
+        model.enc = SubwordTextEncoder(vocab_filepath)
+        model.eval()
+
+        trainer = pl.Trainer(test_percent_check=test_pct, gpus=hparams.gpus)
+        trainer.test(model)
+        return
+
     # Training
     enc = SubwordTextEncoder(vocab_filepath)
     hparams.vocab_size = enc.vocab_size
@@ -383,13 +409,20 @@ if __name__ == "__main__":
                         type=str,
                         default="./data/codesearchnet/java",
                         help="Path to the unzip input data (CodeSearchNet)")
-    # parser.add_argument('--gpus', type=str, default=None)
 
     parser.add_argument("--infer",
+                        action="store_true",
+                        help="Run the inference only")
+
+    parser.add_argument("--test",
+                        action="store_true",
+                        help="Run the evaluation on the test set only")
+
+    parser.add_argument("--model",
                         default=None,
                         type=str,
                         metavar='MODE_FILE',
-                        help="Run the inference only")
+                        help="Path to the serialized model .ckpt")
 
     parser.add_argument("--inspect_data",
                         action="store_true",
