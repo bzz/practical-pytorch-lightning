@@ -19,6 +19,7 @@ import pytorch_lightning as pl
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.nn.utils import rnn
 from torch.utils.data import DataLoader, Dataset
 
 import metrics
@@ -89,8 +90,7 @@ class CodeSearchNetRAM(Dataset):
         # cut, drop class name
         fn_name = row["func_name"][:self.cut]
         fn_name = fn_name.split('.')[-1]  # drop the class name
-        fn_name_enc = [text_encoder.BOS_ID
-                      ] + self.enc.encode(fn_name) + [text_encoder.EOS_ID]
+        fn_name_enc = self.enc.encode(fn_name) + [text_encoder.EOS_ID]
 
         # cut, drop fn signature
         code = row["code"][:self.cut]
@@ -106,17 +106,56 @@ class CodeSearchNetRAM(Dataset):
         return len(self.pd)
 
 
+def pack_collate(batch):
+    """Packs variable-length input, target and decoder input to PackedSequence"""
+
+    def pack_batch_first(
+            sequence) -> Tuple[rnn.PackedSequence, torch.Tensor, List[int]]:
+        """pack_padded_sequence with batch_first=True"""
+        lengths = [v.size(0) for v in sequence]
+        padded = rnn.pad_sequence(sequence, batch_first=True)
+        return (rnn.pack_padded_sequence(padded,
+                                         lengths,
+                                         batch_first=True,
+                                         enforce_sorted=False), padded, lengths)
+
+    def shift_right(t: torch.Tensor) -> torch.Tensor:
+        st = torch.roll(t, 1, 0)
+        st[0] = text_encoder.BOS_ID
+        return st
+
+    (fns_code, fns_names) = zip(*batch)
+    inps_pck, _, _ = pack_batch_first(fns_code)
+    tgts_pck, _tgts_pad, _tgts_len = pack_batch_first(fns_names)
+
+    _tgts_shifted_pad = torch.stack([shift_right(t) for t in _tgts_pad])
+    tgts_shifted_pck = rnn.pack_padded_sequence(_tgts_shifted_pad,
+                                                _tgts_len,
+                                                batch_first=True,
+                                                enforce_sorted=False)
+    return inps_pck, tgts_pck, tgts_shifted_pck
+
+
 def pad_collate(batch):
     """Padds input and target to the same length"""
     (fn_code, fn_name) = zip(*batch)
 
-    inps_pad = torch.nn.utils.rnn.pad_sequence(
-        fn_code, batch_first=True, padding_value=text_encoder.PAD_ID)
-    tgts_pad = torch.nn.utils.rnn.pad_sequence(
-        fn_name, batch_first=True, padding_value=text_encoder.PAD_ID)
+    inps_pad = rnn.pad_sequence(fn_code,
+                                batch_first=True,
+                                padding_value=text_encoder.PAD_ID)
+    tgts_pad = rnn.pad_sequence(fn_name,
+                                batch_first=True,
+                                padding_value=text_encoder.PAD_ID)
 
     return torch.utils.data.dataloader.default_collate(
         list(zip(*(inps_pad, tgts_pad))))
+
+
+def elementwise_apply(fn, *args):
+    """A hack to apply fn like nn.Embedding, F.log_softmax to PackedSequence"""
+    return rnn.PackedSequence(
+        fn(*[(arg.data if type(arg) == rnn.PackedSequence else arg)
+             for arg in args]), args[0].batch_sizes)
 
 
 # Model
@@ -124,11 +163,12 @@ class EncoderRNN(pl.LightningModule):
 
     def __init__(self, hidden_size, embed_size, embed):
         super(EncoderRNN, self).__init__()
-        self.embed = embed
+        self.embeds = embed
         self.rnn = nn.GRU(embed_size, hidden_size, batch_first=True)
 
     def forward(self, inp):
-        emb = self.embed(inp)
+        # emb = self.embed(inp)
+        emb = elementwise_apply(self.embeds, inp)
         output, hidden = self.rnn(emb)
         return output, hidden
 
@@ -141,23 +181,34 @@ class DecoderRNN(pl.LightningModule):
         self.output_size = output_size
         self.max_len = max_len
 
-        self.embed = embed
+        self.embeds = embed
         self.rnn = nn.GRU(embed_size, hidden_size, batch_first=True)
         self.out = nn.Linear(hidden_size, output_size)
 
     def forward_setp(self, input, hidden, encoder_output):
         del encoder_output  # TODO(bzz): use it for Attention
 
-        emb = self.embed(input)
-        o, h = self.rnn(emb, hidden)
-        out = self.out(o)
-        return F.log_softmax(out, dim=-1), h
+        emb = elementwise_apply(self.embeds, input)
+        # emb = self.embeds(input)
 
-    def forward(self, enc_h, enc_out, tgt=None):
-        # teacher forcing
-        decoder_input = tgt
-        if tgt is None:  # inference
-            batch_size = tgt.size(0) if tgt is not None else 1
+        o, h = self.rnn(emb, hidden)
+        # o, _ = rnn.pad_packed_sequence(o,
+        #                                batch_first=True,
+        #                                padding_value=text_encoder.PAD_ID)
+        # out = self.out(o)
+        # return F.log_softmax(out, dim=-1), h
+        out = elementwise_apply(self.out, o)
+        return elementwise_apply(F.log_softmax, out, -1), h
+
+    def forward(self, enc_h, enc_out, shifted_packed_tgt=None):
+        """Uses teacher forcing, relies on tgt starting \w BOS"""
+        # TODO(bzz): separate
+        #  .train() that does require packed tgt
+        #  .forward() that doesn't depend on tgt (and it's beeing packed)
+        #  .infer() that does multiple .forward()/beams
+        decoder_input = shifted_packed_tgt
+        if shifted_packed_tgt is None:  # inference
+            batch_size = enc_h.size(0) if enc_h is not None else 1
             decoder_input = torch.LongTensor(
                 [batch_size * [text_encoder.BOS_ID]]).view(batch_size,
                                                            1).to(enc_h.device)
@@ -192,28 +243,39 @@ class Seq2seqLightningModule(pl.LightningModule):
         return outputs
 
     def training_step(self, batch, batch_idx):  # REQUIRED
-        src, tgt = batch
+        src, tgt, shifted_tgt = batch
         # print(f"batch:{batch_idx}, y:{tgt.size()}, x:{src.size()}")
         # src_dec = self.enc.decode(src[0])[:40].replace('\n', '\\n')
         # print(f"\t {self.enc.decode(tgt[0])}, {src_dec}")
 
-        output = self.forward(src, tgt)
-        loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
+        output = self.forward(src, shifted_tgt)
+        loss = self.criterion(output.data, tgt.data)  # both are packed
 
         tensorboard_logs = {'train_loss': loss}
         return {'loss': loss, 'log': tensorboard_logs}
 
     def validation_step(self, batch, batch_idx):  # OPTIONAL
-        src, tgt = batch
+        src, tgt, shifted_tgt = batch
         # print(f"batch:{batch_idx}, y:{tgt.size()}, x:{src.size()}")
 
-        output = self.forward(src, tgt)
-        loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
+        output = self.forward(src, shifted_tgt)
+        loss = self.criterion(output.data, tgt.data)  # both are packed
+        # loss = self.criterion(output.view(-1, output.shape[-1]), tgt.view(-1))
 
         # metrics
-        preds = torch.argmax(output, dim=-1)
-        (acc, tp, fp, fn) = metrics.acc_cm(preds, tgt, output.size(-1))
-        bleu = metrics.compute_bleu(tgt.tolist(), preds.tolist())
+        preds = torch.argmax(output.data, dim=-1)
+        # preds = elementwise_apply(torch.argmax, output, -1)
+        (acc, tp, fp, fn) = metrics.acc_cm(preds, tgt.data, self.enc.vocab_size)
+
+        preds_pad, _ = rnn.pad_packed_sequence(
+            rnn.PackedSequence(preds, output.batch_sizes),
+            batch_first=True,
+            padding_value=text_encoder.PAD_ID)
+        tgts_pad, _ = rnn.pad_packed_sequence(tgt,
+                                              batch_first=True,
+                                              padding_value=text_encoder.PAD_ID)
+
+        bleu = metrics.compute_bleu(tgts_pad.tolist(), preds_pad.tolist())
         return {
             'val_loss': loss,
             'val_acc': acc,
@@ -259,7 +321,7 @@ class Seq2seqLightningModule(pl.LightningModule):
             ds,
             shuffle=True,  # False, if overfit_pct
             batch_size=self.hparams.batch_size,
-            collate_fn=pad_collate)
+            collate_fn=pack_collate)
         print(
             f"dataset:'{split}', size:{len(ds)}, batch:{self.hparams.batch_size}, nb_batches:{len(dl)}"
         )
@@ -271,7 +333,7 @@ class Seq2seqLightningModule(pl.LightningModule):
                                            "valid"),
                           shuffle=False,
                           batch_size=self.hparams.batch_size,
-                          collate_fn=pad_collate)
+                          collate_fn=pack_collate)
 
     @pl.data_loader
     def test_dataloader(self):
@@ -279,7 +341,7 @@ class Seq2seqLightningModule(pl.LightningModule):
                                            "test"),
                           shuffle=True,
                           batch_size=self.hparams.batch_size,
-                          collate_fn=pad_collate)
+                          collate_fn=pack_collate)
 
     @staticmethod
     def add_model_specific_args(parent_parser):
@@ -318,22 +380,52 @@ class Seq2seqLightningModule(pl.LightningModule):
 
 def main(hparams):
     if hparams.inspect_data:
-        print("Only testing the data preprocessing")
+        print("Only show the input data")
         split_name = "test"
         enc = SubwordTextEncoder(vocab_filepath)
         ds = CodeSearchNetRAM(hparams.data_dir, enc, split_name)
         dl = DataLoader(ds,
                         batch_size=hparams.batch_size,
                         shuffle=True,
-                        collate_fn=pad_collate)
+                        collate_fn=pack_collate)
         print(
             f"dataset:'{split_name}', size:{len(ds)}, batch:{hparams.batch_size}, nb_batches:{len(dl)}"
         )
         for i, batch in enumerate(dl, 1):
-            fn_code, fn_name = (batch)
-            code = enc.decode(fn_code[0])[:30].replace("\n", "\\n")
-            print(f"{i} y:{enc.decode(fn_name[0])} {fn_name.size()}, x:{code}")
-            if i == 4:
+            fn_code, fn_name, fn_name_shft = (batch)
+            print(
+                f"\ny: {fn_name_shft.batch_sizes}, {fn_name.data.size()}, x:{fn_code.data.size()}"
+            )
+            print(
+                f"y_pack: {fn_name_shft.batch_sizes}, {fn_name_shft.data.size()}"
+            )
+
+            # code_text = enc.decode(fn_code[0])[:60].replace("\n", "\\n")
+            # print(f"\ty: -'{enc.decode(fn_name[0]):60}', x: '{code_text}'")
+
+            code, c_lengths = rnn.pad_packed_sequence(
+                fn_code, batch_first=True, padding_value=text_encoder.PAD_ID)
+            name, n_lengths = rnn.pad_packed_sequence(
+                fn_name, batch_first=True, padding_value=text_encoder.PAD_ID)
+            name_shft, s_lengths = rnn.pad_packed_sequence(
+                fn_name_shft,
+                batch_first=True,
+                padding_value=text_encoder.PAD_ID)
+
+            print(
+                f"name:{name.size()}, name_shift:{name_shft.size()}, code:{code.size()}"
+            )
+
+            for t in range(code.size(0)):
+                code_text = enc.decode(code[t])[:60].replace("\n", "\\n")
+                print(
+                    f"\t-y: '{enc.decode(name[t][:60]):60}' x: '{code_text:60}', "
+                )
+
+                inp_text = enc.decode(name_shft[t])[:60].replace("\n", "\\n")
+                print(f"\t+y: '{inp_text[:60]:60}'")
+
+            if i == 1:
                 break
         return
 
@@ -386,6 +478,7 @@ def main(hparams):
     enc = SubwordTextEncoder(vocab_filepath)
     hparams.vocab_size = enc.vocab_size
     model = Seq2seqLightningModule(hparams, enc)
+
     # TODO(bzz): load pre-trained embeddings (+ exclude from optimizer)
     # pretrained_embeddings = "<some vectors>"
     # model.embedding.weight.data.copy_(pretrained_embeddings)
